@@ -4,6 +4,7 @@ import re, sys, os, json, keyboard, threading, requests, sqlite3, time
 shutdown_flag = False
 settings_panel = None
 settings_visible = False
+last_input_time = time.time()
 translator_en_fi = GoogleTranslator(source="en", target="fi")
 translator_fi_en = GoogleTranslator(source="fi", target="en")
 lex_conn = sqlite3.connect("lexicon.db", check_same_thread=False)
@@ -12,8 +13,6 @@ lex_lock = threading.Lock()
 over_conn = sqlite3.connect("overrides.db", check_same_thread=False)
 over_cur = over_conn.cursor()
 over_lock = threading.Lock()
-last_typing_time = 0
-last_stable_phrase = ""
 
 style = {
     "bg": "#222222",
@@ -375,9 +374,47 @@ def background_lookup(word, gen):
         root.after(0, lambda: render_results(gen, items))
         return
     if " " in word:
-        fi = translate_en_to_fi_with_cache_and_overrides(word)
-        items = [(fi, word)]
-        root.after(0, lambda: render_results(gen, items))
+        # Always translate the full sentence for UI
+        fi_sentence = translate_en_to_fi_with_cache_and_overrides(word)
+        root.after(0, lambda: render_results(gen, [(fi_sentence, word)]))
+
+        # --- WORD-BY-WORD CACHING LOGIC ---
+
+        tokens = word.strip().split()
+        if not tokens:
+            return
+
+        last_token = tokens[-1]
+        last_char = word[-1]
+
+        # Determine if the last word is complete
+        complete = False
+
+        if last_char == " ":
+            complete = True
+        elif last_char in ".?!,":
+            complete = True
+        else:
+            # Not complete, do not cache
+            return
+
+        # Clean the word
+        clean = last_token.strip(".,?!").lower()
+
+        # Validate: must be a real word
+        if len(clean) < 2:
+            return
+        if not any(c.isalpha() for c in clean):
+            return
+
+        # Check if translation is identical (skip nonsense words)
+        fi_word = translate_en_to_fi_with_cache_and_overrides(clean)
+        if fi_word.lower() == clean:
+            return
+
+        # Cache the single word
+        store_translation(clean, fi_word)
+
         return
     items = lookup_word(word)
     root.after(0, lambda: render_results(gen, items))
@@ -392,6 +429,8 @@ def on_entry_change(event=None):
     if not word:
         root.after(0, lambda: render_results(current_gen, []))
         return
+    global last_input_time
+    last_input_time = time.time()
     t = threading.Thread(target=background_lookup, args=(word, current_gen), daemon=True)
     t.start()
 
