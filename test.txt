@@ -324,15 +324,23 @@ def store_meanings(word, meanings):
     conn.commit()
     conn.close()
 
+def meanings_already_stored(word):
+    conn = sqlite3.connect(MEAN_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM meanings WHERE word = ?", (word,))
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+testing = False
 def process_word_meanings(word):
-    word = word.lower().strip()
-    if " " in word:
-        return  # only store meanings for single words
-
+    word = normalize_token(word)
+    if not is_single_word(word):
+        return
+    if testing:
+        return
     meanings = fetch_top_two_meanings(word)
     if meanings:
         store_meanings(word, meanings)
-        print(f"Stored meanings for {word}: {meanings}")
 
 def get_reverse_override(finnish_text):
     if not finnish_text:
@@ -351,10 +359,8 @@ def get_reverse_override(finnish_text):
 # Treat as "word" only if it's a single token with letters, at least 2 chars
 word_pattern = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ'-]{2,}$")
 
-def is_single_word(s: str) -> bool:
-    s = s.strip()
-    if " " in s:
-        return False
+def is_single_word(s):
+    s = s.strip().lower()
     return bool(word_pattern.match(s))
 
 def is_valid_translation(src: str, dst: str) -> bool:
@@ -403,45 +409,34 @@ def tokenize_sentence(text):
     return tokens
 
 def translate_en_to_fi_with_cache_and_overrides(text):
-    text = text.strip()
-    if not text:
-        return ""
+    text = text.strip().lower()
 
-    # SINGLE WORD LOGIC
-    if is_single_word(text):
-        ov = get_override(text)
-        if ov:
-            # Store meanings for overridden words too
-            process_word_meanings(text)
-            return ov
+    # 1. OVERRIDE FIRST
+    ov = get_override(text)
+    if ov:
+        return ov
 
-        cached = get_translation_from_cache(text)
+    # 2. CACHE SECOND
+    cached = get_translation_from_cache(text)
+    if cached:
+        return cached
+
+    # 3. SYNONYMS THIRD
+    syns = get_synonyms(text)
+    for s in syns:
+        cached = get_translation_from_cache(s)
         if cached:
-            # Meanings should still be stored if not already
-            process_word_meanings(text)
             return cached
 
-        # Fresh translation
-        try:
-            fi = translator_en_fi.translate(text)
-        except Exception:
-            fi = ""
-
-        if fi:
-            store_translation(text, fi)
-            process_word_meanings(text)   # <-- ADD THIS LINE
-        return fi
-
-    # MULTI-WORD SENTENCE LOGIC
+    # 4. GOOGLE TRANSLATE LAST
     try:
         fi = translator_en_fi.translate(text)
-    except Exception:
+    except:
         fi = ""
 
-    # Process meanings for each word in the sentence
-    for token in tokenize_sentence(text):
-        if is_single_word(token):
-            process_word_meanings(token)
+    # 5. STORE TRANSLATION (ONLY IF VALID)
+    if fi and is_single_word(text):
+        store_translation(text, fi)
 
     return fi
 
