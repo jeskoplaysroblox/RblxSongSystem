@@ -1,6 +1,6 @@
 from deep_translator import GoogleTranslator
 import tkinter as tk
-import re, sys, os, json, keyboard, threading, requests, sqlite3
+import re, sys, os, json, keyboard, threading, requests, sqlite3, time
 shutdown_flag = False
 settings_panel = None
 settings_visible = False
@@ -12,6 +12,8 @@ lex_lock = threading.Lock()
 over_conn = sqlite3.connect("overrides.db", check_same_thread=False)
 over_cur = over_conn.cursor()
 over_lock = threading.Lock()
+last_typing_time = 0
+last_stable_phrase = ""
 
 style = {
     "bg": "#222222",
@@ -253,14 +255,25 @@ def get_translation_from_cache(word):
 def store_translation(word, finnish):
     word = word.lower().strip()
     finnish = finnish.strip()
-    if not word or not finnish:
+
+    # RULE 1: Do not store 1-character "words"
+    if len(word) <= 1:
         return
+
+    # RULE 2: If translation is identical to input, it's not useful
+    if word == finnish.lower():
+        return
+
+    # RULE 3: Must contain at least one letter
+    if not any(c.isalpha() for c in word):
+        return
+
     with lex_lock:
         lex_cur.execute(
             "INSERT OR REPLACE INTO translations (english, finnish) VALUES (?, ?)",
             (word, finnish)
         )
-        lex_conn.commit()
+    lex_conn.commit()
 
 def translate_en_to_fi_with_cache_and_overrides(word):
     word = word.lower().strip()
